@@ -43,7 +43,7 @@ load_custom_css()
 # === Load Keras Models ===
 @st.cache_resource
 def load_models():
-    base = Path("/content/drive/MyDrive/Colab Notebooks/offline-harassment-detection-main/data")
+    base = Path(__file__).resolve().parent / "data"
     audio_path = base / "audio_emotion_model.keras"
     video_path = base / "violence_detection_bilstm.keras"
 
