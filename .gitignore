@@ -1,0 +1,17 @@
+# Training datasets
+data/RLVS/
+data/ravdess/
+data/only_HVD/
+
+# Generated training data
+data/*.npy
+
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
