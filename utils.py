@@ -1,140 +1,266 @@
-# utils.py
+
 import os
 import numpy as np
 import librosa
 import cv2
 
-# MobileNet imports
-from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input
-from tensorflow.keras.models import Model
+from tensorflow.keras.applications.mobilenet_v2 import (
+    MobileNetV2,
+    preprocess_input
+)
 
-# --------- Audio feature extraction ---------
-def extract_audio_features(file_path,
-                           sr=22050,
-                           n_mfcc=40,
-                           max_frames=130):
+
+# =====================================================
+# AUDIO FEATURE EXTRACTION
+# =====================================================
+
+def extract_audio_features(
+    file_path,
+    sr=22050,
+    n_mfcc=40,
+    max_frames=130
+):
     """
-    Extract MFCC audio features shaped (n_mfcc, max_frames, 1).
-    Pads/truncates frames to exactly max_frames.
-    Returns: numpy array dtype float32 or None on error.
+    Extract MFCC audio features.
+
+    Output shape: (40, 130, 1)
     """
+
     try:
-        # load whole audio (let librosa use default sampling if sr=None is desired)
-        audio, sr_used = librosa.load(file_path, sr=sr)
-        # compute MFCCs
-        mfcc = librosa.feature.mfcc(y=audio, sr=sr_used, n_mfcc=n_mfcc)
-        # pad or truncate time dimension to max_frames
+        audio, sr_used = librosa.load(
+            file_path,
+            sr=sr
+        )
+
+        mfcc = librosa.feature.mfcc(
+            y=audio,
+            sr=sr_used,
+            n_mfcc=n_mfcc
+        )
+
+        # Pad or truncate to 130 frames
         if mfcc.shape[1] < max_frames:
             pad_width = max_frames - mfcc.shape[1]
-            mfcc = np.pad(mfcc, ((0, 0), (0, pad_width)), mode='constant', constant_values=0.0)
+
+            mfcc = np.pad(
+                mfcc,
+                ((0, 0), (0, pad_width)),
+                mode="constant"
+            )
+
         else:
             mfcc = mfcc[:, :max_frames]
-        # ensure dtype float32 and add channel axis
-        mfcc = mfcc.astype(np.float32)
-        mfcc = np.expand_dims(mfcc, axis=-1)   # (n_mfcc, max_frames, 1)
-        return mfcc
-    except Exception as e:
-        # Helpful debug print — in production you may want to log instead
-        print(f"Audio Feature Extraction Error ({file_path}): {e}")
-        # Return zeros of the correct shape so downstream code doesn't crash
-        return np.zeros((n_mfcc, max_frames, 1), dtype=np.float32)
 
-# --------- Video feature extraction (MobileNetV2) ---------
-# Cache the MobileNetV2 model to avoid re-loading
+        # Convert to float32
+        mfcc = mfcc.astype(np.float32)
+
+        # Add channel dimension
+        mfcc = np.expand_dims(mfcc, axis=-1)
+
+        return mfcc
+
+    except Exception as e:
+        print(f"Audio Feature Extraction Error: {e}")
+        return None
+
+
+# =====================================================
+# VIDEO FEATURE EXTRACTION USING MOBILENETV2
+# =====================================================
+
 _mobilenet_extractor = None
 
+
 def _get_mobilenet_extractor():
+    """
+    Load MobileNetV2 without global average pooling.
+
+    Output feature map for a 224x224 image:
+    (7, 7, 1280)
+
+    Flattened output:
+    (62720,)
+    """
+
     global _mobilenet_extractor
+
     if _mobilenet_extractor is None:
-        # include_top=False and pooling='avg' gives a 1280-d vector per image
-        _mobilenet_extractor = MobileNetV2(weights='imagenet', include_top=False, pooling='avg')
+
+        _mobilenet_extractor = MobileNetV2(
+            weights="imagenet",
+            include_top=False,
+            pooling=None,
+            input_shape=(224, 224, 3)
+        )
+
     return _mobilenet_extractor
 
-def extract_video_features(video_path,
-                           max_frames=60,
-                           target_size=(224, 224),
-                           frame_sample_rate=1):
+
+def extract_video_features(
+    video_path,
+    max_frames=60,
+    target_size=(224, 224),
+    frame_sample_rate=1
+):
     """
-    Extract per-frame CNN features using MobileNetV2.
-    - max_frames: number of frames (timesteps) to output (pads with zeros if fewer).
-    - target_size: (width, height) to resize frame for MobileNet.
-    - frame_sample_rate: sample one frame every `frame_sample_rate` frames (1 = every frame).
-    Returns: np.array shape (max_frames, 1280), dtype float32
+    Extract video features using MobileNetV2.
+
+    Steps:
+    1. Read video frames.
+    2. Resize frames to 224x224.
+    3. Apply MobileNetV2 preprocessing.
+    4. Extract CNN feature maps.
+    5. Flatten each feature map.
+    6. Pad or truncate to 60 frames.
+
+    Output shape:
+    (60, 62720)
     """
+
+    cap = None
+
     try:
+
+        if frame_sample_rate < 1:
+            raise ValueError(
+                "frame_sample_rate must be at least 1"
+            )
+
+        # Load MobileNetV2
         extractor = _get_mobilenet_extractor()
+
+        # Calculate flattened feature dimension
+        feature_dim = int(
+            np.prod(extractor.output_shape[1:])
+        )
+
         cap = cv2.VideoCapture(video_path)
-        frames_feats = []
-        total_frames_read = 0
-        extracted_count = 0
 
         if not cap.isOpened():
-            raise ValueError("Unable to open video file")
+            raise ValueError(
+                "Unable to open video file"
+            )
 
-        while extracted_count < max_frames:
-            # Read frames in a loop; we will sample according to frame_sample_rate
+        frames_feats = []
+        total_frames_read = 0
+
+        while len(frames_feats) < max_frames:
+
             ret, frame = cap.read()
+
             if not ret:
                 break
+
             total_frames_read += 1
 
-            # sample according to frame_sample_rate
-            if (total_frames_read - 1) % frame_sample_rate != 0:
+            # Sample frames
+            if (
+                (total_frames_read - 1)
+                % frame_sample_rate != 0
+            ):
                 continue
 
-            # convert BGR -> RGB
-            try:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            except Exception:
-                # if frame conversion fails, skip this frame
-                continue
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(
+                frame,
+                cv2.COLOR_BGR2RGB
+            )
 
-            # resize to mobilenet input
-            frame_resized = cv2.resize(frame_rgb, target_size)
-            # preprocess and predict feature
-            x = np.asarray(frame_resized, dtype=np.float32)
-            x = preprocess_input(x)          # mobilenet preprocessing
-            x = np.expand_dims(x, axis=0)    # shape (1, H, W, 3)
-            feat = extractor.predict(x, verbose=0)  # shape (1,1280)
-            feat = feat.reshape(-1)          # (1280,)
+            # Resize frame
+            frame_resized = cv2.resize(
+                frame_rgb,
+                target_size
+            )
+
+            # Convert to float32
+            x = np.asarray(
+                frame_resized,
+                dtype=np.float32
+            )
+
+            # MobileNetV2 preprocessing
+            x = preprocess_input(x)
+
+            # Add batch dimension
+            x = np.expand_dims(x, axis=0)
+
+            # Extract feature map
+            feat = extractor.predict(
+                x,
+                verbose=0
+            )
+
+            # Flatten (7, 7, 1280) to (62720,)
+            feat = feat.reshape(-1)
+
             frames_feats.append(feat)
-            extracted_count += 1
 
-            # safety: break if video is extremely long but we've got enough frames
-            if extracted_count >= max_frames:
-                break
-
+        # Release video
         cap.release()
+        cap = None
 
-        # If we extracted fewer frames than max_frames, pad with zeros
-        if len(frames_feats) < max_frames:
-            n_missing = max_frames - len(frames_feats)
-            # If no frames extracted at all, return zero array
-            if len(frames_feats) == 0:
-                return np.zeros((max_frames, 1280), dtype=np.float32)
-            pad = [np.zeros(1280, dtype=np.float32) for _ in range(n_missing)]
-            frames_feats.extend(pad)
+        if len(frames_feats) == 0:
+            raise ValueError(
+                "No valid frames extracted from video"
+            )
 
-        # Truncate if longer (shouldn't be needed)
+        # Pad missing frames with zeros
+        while len(frames_feats) < max_frames:
+
+            frames_feats.append(
+                np.zeros(
+                    feature_dim,
+                    dtype=np.float32
+                )
+            )
+
+        # Keep exactly 60 frames
         frames_feats = frames_feats[:max_frames]
 
-        features = np.array(frames_feats, dtype=np.float32)  # (max_frames, 1280)
+        # Convert to NumPy array
+        features = np.array(
+            frames_feats,
+            dtype=np.float32
+        )
+
+        print(
+            "Video feature shape:",
+            features.shape
+        )
+
         return features
 
     except Exception as e:
-        print(f"Video Feature Extraction Error ({video_path}): {e}")
-        # return zeros of expected shape to avoid crashing downstream; consider returning None instead if preferred
-        return np.zeros((max_frames, 1280), dtype=np.float32)
 
-# --------- small helper functions (optional) ---------
+        print(
+            f"Video Feature Extraction Error: {e}"
+        )
+
+        return None
+
+    finally:
+
+        if cap is not None:
+            cap.release()
+
+
+# =====================================================
+# INPUT SHAPE HELPER FUNCTIONS
+# =====================================================
+
 def get_video_input_shape_for_model():
     """
-    Returns expected shape for the video model's single sample (timesteps, features).
+    Expected video model input:
+    60 frames x 62720 features
     """
-    return (60, 1280)
+
+    return (60, 62720)
+
 
 def get_audio_input_shape_for_model():
     """
-    Returns expected shape for the audio model input (n_mfcc, frames, channels).
+    Expected audio model input:
+    40 MFCC x 130 frames x 1 channel
     """
+
     return (40, 130, 1)
