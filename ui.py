@@ -184,12 +184,17 @@ def display_batch_results(results, show_confidence=True, show_explanation=True):
             mime="text/csv"
         )
     if len(df) > 0:
-        fig = px.pie(
-            df, names='Status',
-            title='Content Analysis Overview',
-            color_discrete_sequence=['#2ed573', '#ff4757']
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    fig = px.pie(
+        df,
+        names='Status',
+        title='Content Analysis Overview',
+        color='Status',
+        color_discrete_map={
+            '🚨 Violence': '#ff4757',
+            '✅ Safe': '#2ed573'
+        }
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 def display_info_panel():
     st.markdown("""
